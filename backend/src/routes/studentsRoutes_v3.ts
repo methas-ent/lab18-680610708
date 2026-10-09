@@ -1,15 +1,20 @@
 import { Router, type Request, type Response } from "express";
-import { zStudentPostBody, zStudentId } from "../libs/zodValidators.js";
+import {
+  zStudentPostBody,
+  zStudentId,
+  zStudentPutBody,
+} from "../libs/zodValidators.js";
 
 import type { Student, CustomRequest } from "../libs/types.js";
 
 // import authentication middleware
-import { authenticateToken } from "../middlewares/authenMiddleware.ts";
-import { checkRoleAdmin } from "../middlewares/checkRoleAdminDBMiddleware.ts";
-import { checkRoles } from "../middlewares/checkRolesDBMiddleware.ts";
+import { authenticateToken } from "../middlewares/authenMiddleware.js";
+import { checkRoleAdmin } from "../middlewares/checkRoleAdminDBMiddleware.js";
+import { checkRoles } from "../middlewares/checkRolesDBMiddleware.js";
 
 // import database
 import { PrismaClient } from "../../generated/prisma/client.ts";
+
 const prisma = new PrismaClient();
 
 const router = Router();
@@ -114,6 +119,124 @@ router.get(
       return res.json({
         success: false,
         message: "Something is wrong, please try again",
+        error: err,
+      });
+    }
+  },
+);
+
+// PUT /api/v3/students
+// body = { studentId, firstName?, lastName?, program?, interests?, emails? }
+router.put(
+  "/",
+  authenticateToken,
+  checkRoles,
+  async (req: CustomRequest, res: Response) => {
+    try {
+      const user = req.user;
+      const parsed = zStudentPutBody.safeParse(req.body);
+
+      // 1.validate
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+          message: "Bad Request , Validation failed",
+          error: parsed.error.issues,
+        });
+      }
+
+      const { studentId, firstName, lastName, program, interests, emails } =
+        parsed.data;
+
+      // 2) สิทธิ์: STUDENT edit yourself only
+      if (user?.role === "STUDENT" && user.studentId !== studentId) {
+        return res.status(403).json({
+          success: false,
+          message: "Forbidden: you can only edit your own data",
+        });
+      }
+
+      // 3. find นศ.
+      const student = await prisma.student.findUnique({ where: { studentId } });
+      if (!student) {
+        return res.status(404).json({
+          success: false,
+          message: "Student not found",
+        });
+      }
+
+      // 4. update field ที่ส่งมา
+      const updated = await prisma.student.update({
+        where: { studentId },
+        data: {
+          ...(firstName != null && { firstName }),
+          ...(lastName != null && { lastName }),
+          ...(program != null && { program }),
+          ...(interests != null && { interests }),
+          ...(emails != null && { emails }),
+        },
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "Student updated successfully",
+        data: updated,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        success: false,
+        message: "Something went wrong",
+        error: err,
+      });
+    }
+  },
+);
+
+// DELETE
+// body = { studentId }
+router.delete(
+  "/",
+  authenticateToken,
+  checkRoleAdmin,
+  async (req: CustomRequest, res: Response) => {
+    try {
+      const studentId = req.body?.studentId;
+      const parsed = zStudentId.safeParse(studentId);
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+          message: "Validation failed",
+          errors: parsed.error.issues[0]?.message,
+        });
+      }
+
+      const student = await prisma.student.findUnique({
+        where: { studentId },
+      });
+      // case ที่ไม่พบ นศ.
+      if (!student) {
+        return res.status(404).json({
+          success: false,
+          message: "Student not found",
+        });
+      }
+
+      // ต้องลบ Enrollment ที่อ้างอิง studentId ก่อน แล้วค่อยลบนักศึกษา โดยใช้ prisma.$transaction([...])
+      const [, deletedStudent] = await prisma.$transaction([
+        prisma.enrollment.deleteMany({ where: { studentId: parsed.data } }),
+        prisma.student.delete({ where: { studentId: parsed.data } }),
+      ]);
+
+      // case ที่พบ
+      return res.status(200).json({
+        success: true,
+        message: "Student deleted successfully",
+        data: deletedStudent,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        success: false,
+        message: "Something went wrong",
         error: err,
       });
     }

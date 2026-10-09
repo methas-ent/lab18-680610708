@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PlusCircle } from "lucide-react";
+import { PlusCircle, ArrowRightLeft } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -30,9 +30,22 @@ import {
 import { useAuthStore } from "@/lib/auth-store";
 import { useEnrollmentStore } from "@/lib/enrollment-store";
 
+import { ConfirmDeleteButton } from "@/components/confirm-button";
+import type { Enrollment } from "@/lib/types";
+
 export default function StudentEnrollmentsPage() {
+
+
+  const [swapOpen, setSwapOpen] = useState(false);
+  const [selectedEnrollment, setSelectedEnrollment] =
+    useState<Enrollment | null>(null);
+  const [newCourseId, setNewCourseId] = useState<string | null>(null);
+  const [swapError, setSwapError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSubmitting, setActionSubmitting] = useState(false);
+
   const studentId = useAuthStore((s) => s.studentId);
-  const { students, courses, enrollments, enroll } = useEnrollmentStore();
+  const { students, courses, enrollments, enroll, updateEnrollment, dropEnrollment, } = useEnrollmentStore();
 
   const [open, setOpen] = useState(false);
   const [formCourse, setFormCourse] = useState<string | null>(null);
@@ -57,6 +70,57 @@ export default function StudentEnrollmentsPage() {
     if (!next) {
       setFormCourse(null);
       setServerError(null);
+    }
+  };
+
+  const swapCourseOptions = courses
+    .filter((course) => !myEnrollments.some((e) => e.courseId === course.courseId))
+    .map((course) => ({
+      value: course.courseId,
+      label: `${course.courseId} — ${course.courseTitle}`,
+    }));
+
+  const openSwapDialog = (enrollment: Enrollment) => {
+    setSelectedEnrollment(enrollment);
+    setNewCourseId(null);
+    setSwapError(null);
+    setSwapOpen(true);
+  };
+
+  const handleSwapOpenChange = (open: boolean) => {
+    setSwapOpen(open);
+    if (!open) {
+      setSelectedEnrollment(null);
+      setNewCourseId(null);
+      setSwapError(null);
+    }
+  };
+
+  const handleUpdateEnrollment = async () => {
+    if (!studentId || !selectedEnrollment || !newCourseId) return;
+
+    setActionSubmitting(true);
+    setSwapError(null);
+    try {
+      await updateEnrollment(
+        studentId,
+        selectedEnrollment.courseId,
+        newCourseId,
+      );
+      handleSwapOpenChange(false);
+    } catch (err) {
+      setSwapError((err as Error).message);
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
+
+  const handleDropEnrollment = async (enrollment: Enrollment) => {
+    setActionError(null);
+    try {
+      await dropEnrollment(enrollment.studentId, enrollment.courseId);
+    } catch (err) {
+      setActionError((err as Error).message);
     }
   };
 
@@ -140,6 +204,65 @@ export default function StudentEnrollmentsPage() {
         </Dialog>
       </div>
 
+      <Dialog open={swapOpen} onOpenChange={handleSwapOpenChange}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              เปลี่ยนวิชา {selectedEnrollment?.courseId}
+            </DialogTitle>
+            <DialogDescription>
+              เลือกวิชาใหม่แทน {selectedEnrollment?.courseId} (เลือกได้เฉพาะวิชาที่ยังไม่ได้ลงทะเบียน)
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-1.5">
+            <Label htmlFor="newCourseId">วิชาใหม่</Label>
+            <Select
+              items={swapCourseOptions}
+              value={newCourseId}
+              onValueChange={(value) => setNewCourseId(value as string)}
+            >
+              <SelectTrigger id="newCourseId" className="w-full">
+                <SelectValue
+                  placeholder={
+                    swapCourseOptions.length === 0
+                      ? "ไม่มีวิชาอื่นให้เลือก"
+                      : "เลือกวิชา"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {swapCourseOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {swapError && (
+            <p className="text-sm text-destructive">{swapError}</p>
+          )}
+
+          <DialogFooter>
+            <Button
+              disabled={!newCourseId || actionSubmitting}
+              onClick={handleUpdateEnrollment}
+            >
+              <ArrowRightLeft className="h-4 w-4" />
+              {actionSubmitting ? "กำลังบันทึก..." : "บันทึก"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {actionError && (
+        <p className="text-sm text-destructive" role="alert">
+          {actionError}
+        </p>
+      )}
+
       <div className="rounded-lg border">
         <Table>
           <TableHeader>
@@ -148,17 +271,19 @@ export default function StudentEnrollmentsPage() {
               <TableHead>ชื่อวิชา</TableHead>
               <TableHead>ผู้สอน</TableHead>
               <TableHead>วันที่ลงทะเบียน</TableHead>
+              <TableHead>Action</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {myEnrollments.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={4}
+                  colSpan={5}
                   className="h-20 text-center text-muted-foreground"
                 >
                   ยังไม่ได้ลงทะเบียนวิชาใด
                 </TableCell>
+
               </TableRow>
             )}
             {myEnrollments.map((e) => {
@@ -173,6 +298,27 @@ export default function StudentEnrollmentsPage() {
                       ? new Date(e.enrolledAt).toLocaleString("th-TH")
                       : "-"}
                   </TableCell>
+
+                  <TableCell>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`เปลี่ยนวิชา ${e.courseId}`}
+                        onClick={() => openSwapDialog(e)}
+                      >
+                        <ArrowRightLeft className="h-4 w-4" />
+                      </Button>
+
+                      <ConfirmDeleteButton
+                        label={`ยกเลิกการลงทะเบียน ${e.courseId}`}
+                        title={`ยกเลิกการลงทะเบียนวิชา ${e.courseId}?`}
+                        description="การดำเนินการนี้ไม่สามารถย้อนกลับได้"
+                        onConfirm={() => void handleDropEnrollment(e)}
+                      />
+                    </div>
+                  </TableCell>
+
                 </TableRow>
               );
             })}
